@@ -191,20 +191,24 @@
             DENSITY_MULTIPLIER: 4.0,
             MAX_PHASE_DURATION: 35.0,
             YELLOW_DURATION: 3.0,
-            MAX_CARS_PER_ROAD: 3,
+            MAX_CARS_PER_ROAD: 5,
         };
 
         class SmartTrafficSystem {
             constructor() {
                 this.scene = new THREE.Scene();
-                this.camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 5000);
+                this.camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 8000);
                 this.camera.position.set(500, 450, 500);
                 
-                this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+                this.renderer = new THREE.WebGLRenderer({ 
+                    antialias: true, 
+                    powerPreference: "high-performance",
+                    logarithmicDepthBuffer: true // Prevents flickering at high zoom out levels
+                });
                 this.renderer.setSize(window.innerWidth, window.innerHeight);
                 this.renderer.shadowMap.enabled = true;
-                this.renderer.shadowMap.type = THREE.PCFShadowMap; 
-                this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); // Optimized pixel ratio
+                this.renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
+                this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); 
                 this.renderer.outputEncoding = THREE.sRGBEncoding;
                 document.getElementById('canvas-container').appendChild(this.renderer.domElement);
                 
@@ -218,13 +222,16 @@
                 this.streetLights = [];
                 this.buildingWindows = [];
                 
-                this.currentPhase = 0; // N, E, S, W
+                this.currentPhase = 0; 
                 this.phaseState = 'green';
+                this.phaseTime = 0; // CRITICAL: Missing initialization fixed
+                this.waitingTimes = { N: 0, E: 0, S: 0, W: 0 };
                 this.powerOutage = false;
                 this.isRaining = false;
                 this.rainParticles = null;
                 this.ambulanceTimer = 0;
                 this.ambulanceIteration = 1;
+                this.isInitialPhase = true;
                 this.init();
             }
 
@@ -246,65 +253,83 @@
 
             buildEnvironment() {
                 // Deep Emerald Ground (#043915)
-                const groundGeo = new THREE.PlaneGeometry(5000, 5000);
+                const groundGeo = new THREE.PlaneGeometry(3000, 3000);
                 const groundMat = new THREE.MeshStandardMaterial({ color: 0x043915, roughness: 1 });
                 const ground = new THREE.Mesh(groundGeo, groundMat);
                 ground.rotation.x = -Math.PI / 2;
                 ground.receiveShadow = true;
                 this.scene.add(ground);
 
-                // Optimized Road Layering (Dark Charcoal Grey)
+                // Professional 4-Lane Road (150 width)
                 const roadMat = new THREE.MeshLambertMaterial({ color: 0x1e293b });
-                const roadNS = new THREE.Mesh(new THREE.PlaneGeometry(90, 5000), roadMat);
+                const roadNS = new THREE.Mesh(new THREE.PlaneGeometry(150, 3000), roadMat);
                 roadNS.rotation.x = -Math.PI / 2;
-                roadNS.position.y = 1.0; // Increased spacing to stop glitching
+                roadNS.position.y = 0.5; // Raised from 1.0
                 this.scene.add(roadNS);
                 
-                const roadEW = new THREE.Mesh(new THREE.PlaneGeometry(5000, 90), roadMat);
+                const roadEW = new THREE.Mesh(new THREE.PlaneGeometry(3000, 150), roadMat);
                 roadEW.rotation.x = -Math.PI / 2;
-                roadEW.position.y = 1.1; // Increased spacing to stop glitching
+                roadEW.position.y = 0.6; // Raised from 1.1
                 this.scene.add(roadEW);
 
-                // Road Center Lines (Dotted)
-                const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-                for(let i = -2500; i < 2500; i += 60) {
+                // Optimized Road Markings (Instanced for Performance)
+                const centerLineMat = new THREE.MeshBasicMaterial({ color: 0xfde047 });
+                const laneLineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+                
+                const cyNS_Inst = new THREE.InstancedMesh(new THREE.PlaneGeometry(2, 60), centerLineMat, 100);
+                const cyEW_Inst = new THREE.InstancedMesh(new THREE.PlaneGeometry(60, 2), centerLineMat, 100);
+                const lnNS_Inst = new THREE.InstancedMesh(new THREE.PlaneGeometry(1.5, 30), laneLineMat, 100);
+                const lnEW_Inst = new THREE.InstancedMesh(new THREE.PlaneGeometry(30, 1.5), laneLineMat, 100);
+                
+                let cIdx = 0, lIdx = 0;
+                const d = new THREE.Object3D();
+
+                for(let i = -1400; i < 1400; i += 60) {
                     if (Math.abs(i) < 120) continue;
-                    const dashNS = new THREE.Mesh(new THREE.PlaneGeometry(4, 30), lineMat);
-                    dashNS.rotation.x = -Math.PI/2;
-                    dashNS.position.set(0, 1.2, i); 
-                    this.scene.add(dashNS);
+                    
+                    // NS Center
+                    d.rotation.x = -Math.PI/2; d.position.set(2, 0.75, i); d.updateMatrix(); cyNS_Inst.setMatrixAt(cIdx, d.matrix);
+                    d.position.x = -2; d.updateMatrix(); cyNS_Inst.setMatrixAt(cIdx + 1, d.matrix);
+                    
+                    // EW Center
+                    d.position.set(i, 0.8, 2); d.updateMatrix(); cyEW_Inst.setMatrixAt(cIdx, d.matrix);
+                    d.position.z = -2; d.updateMatrix(); cyEW_Inst.setMatrixAt(cIdx + 1, d.matrix);
+                    cIdx += 2;
 
-                    const dashEW = new THREE.Mesh(new THREE.PlaneGeometry(30, 4), lineMat);
-                    dashEW.rotation.x = -Math.PI/2;
-                    dashEW.position.set(i, 1.25, 0); 
-                    this.scene.add(dashEW);
+                    // Dashes
+                    d.position.set(37, 0.75, i); d.updateMatrix(); lnNS_Inst.setMatrixAt(lIdx, d.matrix);
+                    d.position.x = -37; d.updateMatrix(); lnNS_Inst.setMatrixAt(lIdx + 1, d.matrix);
+                    
+                    d.position.set(i, 0.8, 37); d.updateMatrix(); lnEW_Inst.setMatrixAt(lIdx, d.matrix);
+                    d.position.z = -37; d.updateMatrix(); lnEW_Inst.setMatrixAt(lIdx + 1, d.matrix);
+                    lIdx += 2;
                 }
+                cyNS_Inst.count = cIdx; cyEW_Inst.count = cIdx;
+                lnNS_Inst.count = lIdx; lnEW_Inst.count = lIdx;
+                this.scene.add(cyNS_Inst, cyEW_Inst, lnNS_Inst, lnEW_Inst);
 
-                // Curbings to prevent "vanishing" look
+                // Curbings
                 const curbMat = new THREE.MeshStandardMaterial({ color: 0x334155 });
                 const curbs = [
-                    { w: 10, h: 5000, x: 50, z: 0 }, { w: 10, h: 5000, x: -50, z: 0 },
-                    { w: 5000, h: 10, x: 0, z: 50 }, { w: 5000, h: 10, x: 0, z: -50 }
+                    { w: 10, h: 3000, x: 80, z: 0 }, { w: 10, h: 3000, x: -80, z: 0 },
+                    { w: 3000, h: 10, x: 0, z: 80 }, { w: 3000, h: 10, x: 0, z: -80 }
                 ];
                 curbs.forEach(c => {
                     const curb = new THREE.Mesh(new THREE.PlaneGeometry(c.w, c.h), curbMat);
-                    curb.rotation.x = -Math.PI/2;
-                    curb.position.set(c.x, 0.4, c.z); // Clean offset
-                    this.scene.add(curb);
+                    curb.rotation.x = -Math.PI/2; curb.position.set(c.x, 0.4, c.z); this.scene.add(curb);
                 });
 
-                // Clearer Zebra Markings
+                // Zebra Markings
                 const zebraMat = new THREE.MeshBasicMaterial({ color: 0xf8fafc });
                 const crossings = [
-                    { x: 0, z: -100, rot: 0 }, { x: 0, z: 100, rot: 0 },
-                    { x: -100, z: 0, rot: Math.PI/2 }, { x: 100, z: 0, rot: Math.PI/2 }
+                    { x: 0, z: -120, rot: 0 }, { x: 0, z: 120, rot: 0 },
+                    { x: -120, z: 0, rot: Math.PI/2 }, { x: 120, z: 0, rot: Math.PI/2 }
                 ];
                 crossings.forEach(c => {
-                    for(let i=-4; i<=4; i++) {
-                        const s = new THREE.Mesh(new THREE.PlaneGeometry(6, 28), zebraMat);
-                        s.rotation.x = -Math.PI/2;
-                        s.rotation.z = c.rot;
-                        s.position.set(c.x + (c.rot?0:i*9), 1.2, c.z + (c.rot?i*9:0)); 
+                    for(let i=-6; i<=6; i++) {
+                        const s = new THREE.Mesh(new THREE.PlaneGeometry(8, 40), zebraMat);
+                        s.rotation.x = -Math.PI/2; s.rotation.z = c.rot;
+                        s.position.set(c.x + (c.rot?0:i*10), 0.71, c.z + (c.rot?i*10:0)); // Raised to 0.71 (below marks)
                         this.scene.add(s);
                     }
                 });
@@ -314,19 +339,27 @@
                 const houseBodyMat = new THREE.MeshLambertMaterial({ color: 0xf1f5f9 });
                 
                 const houseWinGeo = new THREE.PlaneGeometry(12, 10);
-                const houseWinMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0 });
+                const houseWinMat = new THREE.MeshBasicMaterial({ color: 0x000000 }); // Performance optimization
                 this.buildingWindows.push(houseWinMat);
 
-                for (let i = 0; i < 48; i++) {
+                const housesPerSide = 4;
+                for (let i = 0; i < 16; i++) {
                     const quadrant = i % 4;
-                    const row = Math.floor(i / 8);
-                    const col = i % 8;
-                    let hX, hZ;
+                    const index = Math.floor(i / 4); // 0, 1, 2, 3
+                    const row = Math.floor(index / 2);
+                    const col = index % 2;
                     
-                    if (quadrant === 0) { hX = 150 + col * 90; hZ = 150 + row * 110; }
-                    else if (quadrant === 1) { hX = -150 - col * 90; hZ = 150 + row * 110; }
-                    else if (quadrant === 2) { hX = 150 + col * 90; hZ = -150 - row * 110; }
-                    else { hX = -150 - col * 90; hZ = -150 - row * 110; }
+                    let hX, hZ;
+                    // Grid-based placement with a small random jitter to avoid overlaps
+                    const baseX = 200 + col * 250; 
+                    const baseZ = 200 + row * 250;
+                    const jitterX = (Math.random() - 0.5) * 80;
+                    const jitterZ = (Math.random() - 0.5) * 80;
+
+                    if (quadrant === 0) { hX = baseX + jitterX; hZ = baseZ + jitterZ; }
+                    else if (quadrant === 1) { hX = -(baseX + jitterX); hZ = baseZ + jitterZ; }
+                    else if (quadrant === 2) { hX = baseX + jitterX; hZ = -(baseZ + jitterZ); }
+                    else { hX = -(baseX + jitterX); hZ = -(baseZ + jitterZ); }
 
                     const houseGrp = new THREE.Group();
                     houseGrp.position.set(hX, 0, hZ);
@@ -365,40 +398,34 @@
                 addSign(70, -140, Math.PI, "STREET NO3");
                 addSign(-70, -140, Math.PI, "STREET NO4");
 
-                // Skyline Buildings (Optimized with Instanced Windows)
+                // Skyline Buildings (Optimized with Half Windows)
                 const winGeo = new THREE.PlaneGeometry(8, 12);
-                const winMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 1.0 });
+                const winMat = new THREE.MeshBasicMaterial({ color: 0x000000 }); 
                 this.buildingWindows.push(winMat);
-                const winInst = new THREE.InstancedMesh(winGeo, winMat, 40000);
+                const winInst = new THREE.InstancedMesh(winGeo, winMat, 6000); // Throttled from 20000
                 let winIdx = 0;
                 const winDummy = new THREE.Object3D();
 
                 const buildColors = [0x334155, 0x475569, 0x1e293b, 0x3f6075, 0x4a5d4e]; 
-                for (let i = 0; i < 70; i++) {
-                    const x = (Math.random() - 0.5) * 4500;
-                    const z = (Math.random() - 0.5) * 4500;
+                for (let i = 0; i < 40; i++) {
+                    const x = (Math.random() - 0.5) * 4000;
+                    const z = (Math.random() - 0.5) * 4000;
                     if (Math.abs(x) < 140 || Math.abs(z) < 140) continue; 
                     if (Math.abs(x) < 850 && Math.abs(z) < 850) continue;
                     
-                    const h = 250 + Math.random() * 600;
-                    const w = 70 + Math.random() * 90;
+                    const h = 200 + Math.random() * 500;
+                    const w = 60 + Math.random() * 80;
                     const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), new THREE.MeshLambertMaterial({ color: buildColors[i % 5] }));
                     b.position.set(x, h/2, z); b.castShadow = true; this.scene.add(b);
                     
-                    // Add instanced windows
-                    const rows = Math.floor(h / 30);
-                    const cols = Math.floor(w / 15);
+                    // Add instanced windows (High performance density)
+                    const rows = Math.floor(h / 120);
+                    const cols = Math.floor(w / 40);
                     for(let r=1; r<rows; r++) {
                         for(let c=1; c<cols; c++) {
-                            if (winIdx >= 39999) break;
-                            // Front face
-                            winDummy.position.set(x -w/2 + c*15, r*30, z + w/2 + 0.1);
-                            winDummy.rotation.set(0, 0, 0);
-                            winDummy.updateMatrix();
-                            winInst.setMatrixAt(winIdx++, winDummy.matrix);
-                            // Back face
-                            winDummy.position.z = z - w/2 - 0.1;
-                            winDummy.rotation.y = Math.PI;
+                            if (winIdx >= 5998) break;
+                            // Front face only for distant buildings
+                            winDummy.position.set(x -w/2 + c*40, r*120, z + w/2 + 0.1);
                             winDummy.updateMatrix();
                             winInst.setMatrixAt(winIdx++, winDummy.matrix);
                         }
@@ -428,31 +455,33 @@
                         const side = (i % 160 === 0) ? 1 : -1;
                         // Lamps NS
                         const lampNS = new THREE.Group();
-                        lampNS.position.set(65 * side, 0, i);
+                        lampNS.position.set(95 * side, 0, i);
                         const poleNS = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 2.5, 70), new THREE.MeshLambertMaterial({color: 0x020617}));
                         poleNS.position.y = 35; lampNS.add(poleNS);
                         const armNS = new THREE.Mesh(new THREE.BoxGeometry(15, 2, 2), new THREE.MeshLambertMaterial({color: 0x020617}));
                         armNS.position.set(side > 0 ? -7 : 7, 70, 0); lampNS.add(armNS);
-                        const lightNS = new THREE.PointLight(0xfef9c3, 0, 250, 2); // Reduced range
-                        lightNS.position.set(side > 0 ? -12: 12, 70, 0); lampNS.add(lightNS);
-                        this.streetLights.push(lightNS);
+                        
+                        // BULB EMISSIVE MESH (Replaced expensive Real PointLights with glow materials)
+                        const bulbNS = new THREE.Mesh(new THREE.SphereGeometry(3, 8, 8), new THREE.MeshBasicMaterial({color: 0x000000}));
+                        bulbNS.position.set(side > 0 ? -12: 12, 70, 0); lampNS.add(bulbNS);
+                        this.streetLights.push(bulbNS);
                         this.scene.add(lampNS);
 
-                        // Lamps EW
                         const lampEW = new THREE.Group();
-                        lampEW.position.set(i, 0, 65 * side);
+                        lampEW.position.set(i, 0, 95 * side);
                         lampEW.rotation.y = Math.PI/2;
                         const poleEW = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 2.5, 70), new THREE.MeshLambertMaterial({color: 0x020617}));
                         poleEW.position.y = 35; lampEW.add(poleEW);
                         const armEW = new THREE.Mesh(new THREE.BoxGeometry(15, 2, 2), new THREE.MeshLambertMaterial({color: 0x020617}));
                         armEW.position.set(side > 0 ? 7 : -7, 70, 0); lampEW.add(armEW);
-                        const lightEW = new THREE.PointLight(0xfef9c3, 0, 250, 2);
-                        lightEW.position.set(side > 0 ? 12: -12, 70, 0); lampEW.add(lightEW);
-                        this.streetLights.push(lightEW);
+                        
+                        const bulbEW = new THREE.Mesh(new THREE.SphereGeometry(3, 8, 8), new THREE.MeshBasicMaterial({color: 0x000000}));
+                        bulbEW.position.set(side > 0 ? 12: -12, 70, 0); lampEW.add(bulbEW);
+                        this.streetLights.push(bulbEW);
                         this.scene.add(lampEW);
 
                         // Bushes (Instanced)
-                        const roads = [{x: 48, z: i, rot: 0}, {x: -48, z: i, rot: 0}, {x: i, z: 48, rot: Math.PI/2}, {x: i, z: -48, rot: Math.PI/2}];
+                        const roads = [{x: 88, z: i, rot: 0}, {x: -88, z: i, rot: 0}, {x: i, z: 88, rot: Math.PI/2}, {x: i, z: -88, rot: Math.PI/2}];
                         roads.forEach(r => {
                             const clusterSize = Math.random() < 0.4 ? 2 : 1;
                             for(let c=0; c<clusterSize; c++) {
@@ -477,10 +506,10 @@
 
                 // Rain Particles (Hidden by default)
                 const rainGeo = new THREE.BufferGeometry();
-                const rainCount = 2000;
+                const rainCount = 800; // Optimized from 2000
                 const rainPoints = [];
                 for(let i=0; i<rainCount; i++) {
-                    rainPoints.push((Math.random()-0.5)*2000, Math.random()*1000, (Math.random()-0.5)*2000);
+                    rainPoints.push((Math.random()-0.5)*1500, Math.random()*800, (Math.random()-0.5)*1500);
                 }
                 rainGeo.setAttribute('position', new THREE.Float32BufferAttribute(rainPoints, 3));
                 const rainMat = new THREE.PointsMaterial({color: 0xaaaaaa, size: 2, transparent: true, opacity: 0});
@@ -530,6 +559,10 @@
             spawnCar(lane = null, type = 'normal') {
                 const lanes = ['N', 'E', 'S', 'W'];
                 const targetLane = lane || lanes[Math.floor(Math.random() * 4)];
+                
+                // Strict Global Limit for Rush Hour
+                if (this.isRush && this.vehicles.length >= 20) return;
+                
                 if (this.vehicles.filter(v => v.lane === targetLane).length >= CONFIG.MAX_CARS_PER_ROAD) return;
 
                 const car = new THREE.Group();
@@ -603,17 +636,25 @@
                 });
 
                 const laneConfigs = {
-                    N: { x: -40, z: -2000, rot: 0, axis: 'z', dir: 1 },
-                    S: { x: 40, z: 2000, rot: Math.PI, axis: 'z', dir: -1 },
-                    E: { x: 2000, z: -40, rot: -Math.PI/2, axis: 'x', dir: -1 },
-                    W: { x: -2000, z: 40, rot: Math.PI/2, axis: 'x', dir: 1 }
+                    N: { offset: -1, rot: 0, axis: 'z', dir: 1 },
+                    S: { offset: 1, rot: Math.PI, axis: 'z', dir: -1 },
+                    E: { offset: -1, rot: -Math.PI/2, axis: 'x', dir: -1 },
+                    W: { offset: 1, rot: Math.PI/2, axis: 'x', dir: 1 }
                 };
                 const config = laneConfigs[targetLane];
+                
+                const isInner = Math.random() < 0.6;
+                const laneOffset = isInner ? 22 : 58; 
+                // Increased Left Turn chance to 50% for inner lane
+                const intent = type === 'ambulance' ? 'straight' : (isInner ? (Math.random() < 0.5 ? 'straight' : 'left') : 'right');
+
+                if (targetLane === 'N' || targetLane === 'S') car.position.x = config.offset * laneOffset;
+                else car.position.z = config.offset * laneOffset;
+
+                car.position[config.axis] = (targetLane === 'N' || targetLane === 'W') ? -1400 : 1400;
+                car.rotation.y = config.rot;
 
                 let hlColor = 0xfff9c4;
-                if (targetLane === 'W') hlColor = 0xffffff;
-                if (targetLane === 'S') hlColor = 0xffe082;
-                 
                 const hl = new THREE.Mesh(new THREE.CircleGeometry(3, 32), new THREE.MeshBasicMaterial({color: hlColor}));
                 hl.position.set(-6, 8, bodyL/2 + 0.1); car.add(hl);
                 const hr = hl.clone(); hr.position.x = 6; car.add(hr);
@@ -631,10 +672,23 @@
                     sirens.position.y = bodyH + 8; car.add(sirens);
                 }
 
-                car.position.set(config.x, 0, config.z);
-                car.rotation.y = config.rot;
+                // Add Blinkers (Orange)
+                const blinkerGeo = new THREE.CircleGeometry(1.5, 16);
+                const blinkerMat = new THREE.MeshBasicMaterial({color: 0xffa500, transparent: true, opacity: 0});
+                const blnt = new THREE.Mesh(blinkerGeo, blinkerMat); 
+                blnt.position.set(-8, 8, bodyL/2 + 0.2); car.add(blnt);
+                const brnt = blnt.clone(); brnt.position.x = 8; car.add(brnt);
+                
                 this.scene.add(car);
-                this.vehicles.push({ mesh: car, lane: targetLane, type: category, speed: 0, maxSpeed: category==='ambulance'?CONFIG.EMERGENCY_SPEED:CONFIG.NORMAL_SPEED, config, brakeLights: [bl, br], headLight: beam, sirens, status: 'moving' });
+                const carObj = { 
+                    mesh: car, lane: targetLane, type: category, intent: intent, isTurning: false, turnProgress: 0,
+                    turnAngle: 0, blinkers: { L: blnt, R: brnt },
+                    speed: 0, maxSpeed: category==='ambulance'?CONFIG.EMERGENCY_SPEED:CONFIG.NORMAL_SPEED, 
+                    config, brakeLights: [bl, br], headLight: beam, sirens, status: 'moving',
+                    originalOffset: laneOffset, isOvertaking: false, overtakeTarget: 0,
+                    length: bodyL
+                };
+                this.vehicles.push(carObj);
             }
 
             spawnPedestrians() {
@@ -675,15 +729,6 @@
             }
 
             updateTrafficLights(dt) {
-                if (this.powerOutage) {
-                    this.phaseTime += dt; const blink = Math.floor(this.phaseTime * 2) % 2;
-                    Object.values(this.trafficLights).forEach(l => {
-                        l.red.material.emissive.setHex(0); l.green.material.emissive.setHex(0);
-                        l.yellow.material.emissive.setHex(blink ? 0xffea00 : 0); l.state = 'outage';
-                    });
-                    return;
-                }
-
                 const phases = ['NORTH', 'EAST', 'SOUTH', 'WEST'];
                 const laneKeys = ['N', 'E', 'S', 'W'];
                 this.phaseTime += dt;
@@ -694,18 +739,34 @@
                     if (dist > CONFIG.STOP_DISTANCE && dist < 500 && (v.mesh.position[v.config.axis] * v.config.dir < 0)) density[v.lane]++;
                 });
 
-                this.dynamicDuration = Math.min(CONFIG.MAX_PHASE_DURATION, CONFIG.BASE_PHASE_DURATION + (density[laneKeys[this.currentPhase]] * CONFIG.DENSITY_MULTIPLIER));
+                if (this.powerOutage) {
+                    this.dynamicDuration = CONFIG.BASE_PHASE_DURATION;
+                } else if (this.isInitialPhase) {
+                    this.dynamicDuration = 15.0; // Fixed 15s for the very first signal
+                } else {
+                    this.dynamicDuration = Math.min(CONFIG.MAX_PHASE_DURATION, CONFIG.BASE_PHASE_DURATION + (density[laneKeys[this.currentPhase]] * CONFIG.DENSITY_MULTIPLIER));
+                    if (this.isRaining || this.isSnowing) this.dynamicDuration += 4.0;
+                }
 
-                // LANE CLEARING CHECK: Are there still cars inside the intersection?
                 const activeLane = laneKeys[this.currentPhase];
-                const carsClearing = this.vehicles.some(v => v.lane === activeLane && Math.abs(v.mesh.position[v.config.axis]) < 180);
+                const carsClearing = this.vehicles.some(v => 
+                    (v.lane === activeLane && Math.abs(v.mesh.position[v.config.axis]) < 120) || // Sharpened: only cars actually IN the box
+                    (v.isTurning && Math.abs(v.mesh.position.x) < 160 && Math.abs(v.mesh.position.z) < 160)
+                );
 
-                // SMART SKIP: Only skip if road is EMPTY and intersection is CLEAR
-                if (this.phaseState === 'green' && density[activeLane] === 0 && !carsClearing && this.phaseTime > 3.0) {
+                // Density & Waiting Time Trackers
+                laneKeys.forEach((lane, idx) => {
+                    if (idx !== this.currentPhase && density[lane] > 0) {
+                        this.waitingTimes[lane] += dt;
+                    } else if (idx === this.currentPhase) {
+                        this.waitingTimes[lane] = 0;
+                    }
+                });
+
+                if (!this.powerOutage && this.phaseState === 'green' && density[activeLane] === 0 && !carsClearing && this.phaseTime > 3.0) {
                     this.dynamicDuration = 3.0;
                 }
 
-                // AMBULANCE PRIORITY: Forced override
                 const priorityAmbulance = this.vehicles.find(v => v.type === 'ambulance' && Math.abs(v.mesh.position[v.config.axis]) < 700 && (v.mesh.position[v.config.axis] * v.config.dir < 0));
                 if (priorityAmbulance) {
                     const ambPhase = laneKeys.indexOf(priorityAmbulance.lane);
@@ -716,107 +777,214 @@
                     }
                 }
                 
-                // Switch phase only if time is up AND intersection is clear
                 if(this.phaseTime > (this.phaseState === 'green' ? this.dynamicDuration : CONFIG.YELLOW_DURATION)) {
-                    // Force wait if cars are still clearing the path
-                    if (this.phaseState === 'green' && carsClearing && !priorityAmbulance) return; 
+                    // Safety Force Switch: Max 45s limit to prevent signal deadlocks from stuck cars
+                    const forceSwitch = (this.phaseState === 'green' && this.phaseTime > 45);
+                    if (!this.isInitialPhase && this.phaseState === 'green' && carsClearing && !priorityAmbulance && !forceSwitch) return; 
 
-                    if (this.phaseState === 'green') { this.phaseState = 'yellow'; this.phaseTime = 0; }
-                    else { this.phaseState = 'green'; this.phaseTime = 0; this.currentPhase = (this.currentPhase + 1) % 4; }
+                    if (this.phaseState === 'green') { 
+                        this.phaseState = 'yellow'; 
+                        this.phaseTime = 0; 
+                        this.isInitialPhase = false; 
+                    } else { 
+                        this.phaseState = 'green'; 
+                        this.phaseTime = 0; 
+                        
+                        let bestScore = -1;
+                        let nextPhase = (this.currentPhase + 1) % 4;
+
+                        laneKeys.forEach((lane, idx) => {
+                            const score = (density[lane] * 2.5) + (this.waitingTimes[lane] * 0.8);
+                            if (score > bestScore) {
+                                bestScore = score;
+                                nextPhase = idx;
+                            }
+                        });
+                        
+                        this.currentPhase = nextPhase;
+                        this.waitingTimes[laneKeys[this.currentPhase]] = 0; 
+                    }
                 }
 
                 Object.keys(this.trafficLights).forEach(dir => {
                     const l = this.trafficLights[dir];
                     const active = (dir === laneKeys[this.currentPhase]);
+                    
+                    // Logical State for Vehicles
                     if (active) {
-                        if (this.phaseState === 'green') { l.red.material.emissive.setHex(0); l.yellow.material.emissive.setHex(0); l.green.material.emissive.setHex(0x00ff00); l.state = 'green'; }
-                        else { l.red.material.emissive.setHex(0); l.yellow.material.emissive.setHex(0xffff00); l.green.material.emissive.setHex(0); l.state = 'yellow'; }
-                    } else { l.red.material.emissive.setHex(0xff0000); l.yellow.material.emissive.setHex(0); l.green.material.emissive.setHex(0); l.state = 'red'; }
+                        l.state = (this.phaseState === 'green') ? 'green' : 'yellow';
+                    } else {
+                        l.state = 'red';
+                    }
+
+                    // Visual Rendering
+                    if (this.powerOutage) {
+                        const blink = Math.floor(this.clock.elapsedTime * 2) % 2;
+                        l.red.material.emissive.setHex(0);
+                        l.green.material.emissive.setHex(0);
+                        l.yellow.material.emissive.setHex(blink ? 0xffea00 : 0);
+                    } else {
+                        if (l.state === 'green') { l.red.material.emissive.setHex(0); l.yellow.material.emissive.setHex(0); l.green.material.emissive.setHex(0x00ff00); }
+                        else if (l.state === 'yellow') { l.red.material.emissive.setHex(0); l.yellow.material.emissive.setHex(0xffff00); l.green.material.emissive.setHex(0); }
+                        else { l.red.material.emissive.setHex(0xff0000); l.yellow.material.emissive.setHex(0); l.green.material.emissive.setHex(0); }
+                    }
                 });
-                document.getElementById('phase-display').innerText = phases[this.currentPhase];
+                
+                document.getElementById('phase-display').innerText = this.powerOutage ? "OUTAGE" : phases[this.currentPhase];
                 document.getElementById('green-timer').innerText = Math.ceil((this.phaseState==='green'?this.dynamicDuration:CONFIG.YELLOW_DURATION) - this.phaseTime) + "s";
             }
 
             updateVehicles(dt) {
-                this.vehicles.forEach((v, i) => {
+                for (let i = this.vehicles.length - 1; i >= 0; i--) {
+                    const v = this.vehicles[i];
                     const pos = v.mesh.position;
-                    const axis = v.config.axis;
-                    const dir = v.config.dir;
+                    let axis = v.config.axis;
+                    let dir = v.config.dir;
                     const dist = Math.abs(pos[axis]);
                     const movingTowardsCenter = (pos[axis] * dir < 0);
                     let target = v.maxSpeed;
                     v.status = 'moving';
 
-                    if (movingTowardsCenter) {
+                    // 1. LIGHT RADIUS (Only for cars moving towards the intersection)
+                    if (movingTowardsCenter && !v.isTurning) {
                         const light = this.trafficLights[v.lane];
-                        // Power Outage Caution: Slow down and check cross-traffic
-                        if (this.powerOutage) {
-                            target = Math.min(target, 0.8);
-                            if (dist < 120 && dist > 100) {
-                                // Simple yield logic: If someone is in square, stop
-                                const bugInIntersection = this.vehicles.some(other => 
-                                    other !== v && 
-                                    Math.abs(other.mesh.position.x) < 80 && 
-                                    Math.abs(other.mesh.position.z) < 80
-                                );
-                                if (bugInIntersection) { target = 0; v.status = 'braking'; }
-                            }
-                        } else if ((light.state === 'red' || light.state === 'yellow') && v.type !== 'ambulance') {
+                        if ((light.state === 'red' || light.state === 'yellow') && v.type !== 'ambulance') {
                             const distToLine = dist - CONFIG.STOP_DISTANCE;
                             if (distToLine > 0) {
-                                target = Math.max(0, Math.min(v.maxSpeed, distToLine / 25)); // Slightly tighter deceleration
+                                target = Math.max(0, Math.min(v.maxSpeed, distToLine / 25)); 
                                 if (distToLine < 15) v.status = 'braking'; 
-                            } else {
-                                target = 0;
-                            }
+                            } else { target = 0; }
+                        } else if (dist < (v.intent === 'left' ? 40 : 120) && v.intent !== 'straight') {
+                            v.isTurning = true; v.turnAngle = 0;
                         }
-                        
-                        // UNIVERSAL COLLISION RADAR (Avoids any vehicle in path)
-                        this.vehicles.forEach(other => {
-                            if (other === v) return;
-                            
-                            // Same lane following
-                            if (other.lane === v.lane) {
-                                const gap = (pos[axis] - other.mesh.position[axis]) * -dir;
-                                if (gap > 0 && gap < CONFIG.FOLLOW_DISTANCE + 10) {
-                                    target = Math.min(target, other.speed * 0.7);
-                                    if (gap < CONFIG.FOLLOW_DISTANCE) { target = 0; v.status = 'braking'; }
-                                }
-                            } 
-                            // Intersection check (Crucial for Ambulance Safety)
-                            else if (Math.abs(pos.x) < 150 && Math.abs(pos.z) < 150) {
-                                const distToOther = pos.distanceTo(other.mesh.position);
-                                if (distToOther < 60) {
-                                    // If other is directly in front path
-                                    const relDir = other.mesh.position.clone().sub(pos).normalize();
-                                    const carForward = new THREE.Vector3(0,0,1).applyQuaternion(v.mesh.quaternion);
-                                    if (relDir.dot(carForward) > 0.8) {
-                                        target = 0; v.status = 'braking';
-                                    }
-                                }
-                            }
-                        });
                     }
 
-                    if (v.speed < target) v.speed += (this.isRaining ? 0.08 : 0.4); // Snappier acceleration
-                    else if (v.speed > target) v.speed -= 1.2; // Optimized braking for high-speed protocol
+                        // 2. UNIVERSAL COLLISION RADAR (Smart Awareness)
+                        for (let j = 0; j < this.vehicles.length; j++) {
+                            const other = this.vehicles[j];
+                            if (other === v) continue;
+                            
+                            // Turning Priority: Ignore cars in other lanes that are waiting at lights
+                            if (v.isTurning && !other.isTurning && v.lane !== other.lane && other.speed < 0.1) continue;
+                            
+                            // Straight Priority: Yield to anyone ALREADY in the intersection (The Box Rule)
+                            if (!v.isTurning && other.isTurning && Math.abs(other.mesh.position.x) < 100 && Math.abs(other.mesh.position.z) < 100) {
+                                if (pos.distanceTo(other.mesh.position) < 130) { target = 0; v.status = 'braking'; continue; }
+                            }
+
+                            if (!v.isTurning && !other.isTurning && !v.isOvertaking && v.lane !== other.lane) continue;
+
+                        const d = pos.distanceTo(other.mesh.position);
+                        if (d > 200) continue; 
+
+                        const relDir = other.mesh.position.clone().sub(pos).normalize();
+                        const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(v.mesh.quaternion);
+                        
+                        if (relDir.dot(fwd) > 0.4) {
+                            // Ambulance Priority Overtake Trigger
+                            if (v.type === 'ambulance' && !v.isTurning && !v.isOvertaking && d < 150 && other.speed < v.maxSpeed * 0.8) {
+                                const otherSideOffset = v.originalOffset === 22 ? 58 : 22;
+                                const sideAxis = axis === 'x' ? 'z' : 'x';
+                                const gapReq = this.isRush ? 65 : 100;
+                                const laneClear = !this.vehicles.some(v2 => v2 !== v && Math.abs(v2.mesh.position[sideAxis] - (v.config.offset * otherSideOffset)) < 15 && Math.abs(v2.mesh.position[axis] - pos[axis]) < gapReq);
+                                if (laneClear) { v.isOvertaking = true; v.overtakeTarget = v.config.offset * otherSideOffset; }
+                            }
+                            
+                            if (!v.isOvertaking || v.type !== 'ambulance') {
+                                const minSafe = (v.length/2 + other.length/2) + 12;
+                                target = Math.min(target, other.speed * 0.9);
+                                if (d < minSafe) { target = 0; v.status = 'braking'; }
+                            }
+                        }
+                    }
+
+                    // 3. AMBULANCE OVERTAKE EXECUTION
+                    if (v.isOvertaking && !v.isTurning) {
+                        const sideAxis = axis === 'x' ? 'z' : 'x';
+                        const shift = (v.overtakeTarget - pos[sideAxis]);
+                        if (Math.abs(shift) > 1) {
+                            pos[sideAxis] += Math.sign(shift) * 1.5;
+                        } else {
+                            const blocking = this.vehicles.find(v2 => v2 !== v && Math.abs(v2.mesh.position[sideAxis] - (v.config.offset * v.originalOffset)) < 15 && (v2.mesh.position[axis] - pos[axis]) * dir > -80 && (v2.mesh.position[axis] - pos[axis]) * dir < 120);
+                            if (!blocking) {
+                                const clear = !this.vehicles.some(v2 => v2 !== v && Math.abs(v2.mesh.position[sideAxis] - (v.config.offset * v.originalOffset)) < 15 && Math.abs(v2.mesh.position[axis] - pos[axis]) < 120);
+                                if (clear && Math.abs(pos[axis]) > 200) {
+                                    v.overtakeTarget = v.config.offset * v.originalOffset;
+                                    if (Math.abs(pos[sideAxis] - v.overtakeTarget) < 2) v.isOvertaking = false;
+                                }
+                            }
+                        }
+                    }
+
+                    // 4. SPEED & POSITION UPDATE (Unlocked for all states)
+                    if (v.speed < target) v.speed += 0.4;
+                    else if (v.speed > target) v.speed -= (this.isRaining || this.isSnowing) ? 0.6 : 1.2;
                     if (v.speed < 0.1) v.speed = 0;
 
-                    pos[axis] += v.speed * dir;
+                    if (v.isTurning) {
+                        const isLeft = v.intent === 'left';
+                        const radius = isLeft ? 90 : 38;
+                        const turnStep = (v.speed / radius);
+                        
+                        // 1. Left Turn Yield Logic: Only yield if oncoming traffic is actually moving and close
+                        let yieldForCross = false;
+                        if (isLeft && v.turnAngle < Math.PI/3) {
+                            yieldForCross = this.vehicles.some(other => 
+                                other !== v && !other.isTurning && other.lane === (v.lane === 'N' ? 'S' : v.lane === 'S' ? 'N' : v.lane === 'E' ? 'W' : 'E') &&
+                                other.speed > 0.5 && // Only yield if they are actually moving
+                                Math.abs(other.mesh.position.distanceTo(pos)) < 110
+                            );
+                        }
+
+                        if (!yieldForCross) {
+                            v.mesh.rotation.y += isLeft ? turnStep : -turnStep;
+                            v.turnAngle += turnStep;
+                            v.mesh.translateZ(v.speed);
+                        } else { 
+                            v.status = 'braking'; 
+                            target = 0; // Proper stop for yielding
+                        }
+
+                        if (v.turnAngle >= Math.PI * 0.485) { 
+                            v.isTurning = false;
+                            v.mesh.rotation.y = Math.round(v.mesh.rotation.y / (Math.PI/2)) * (Math.PI/2);
+                            const ang = ((v.mesh.rotation.y % (Math.PI*2)) + (Math.PI*2)) % (Math.PI*2);
+                            if (Math.abs(ang % Math.PI) < 0.1) { 
+                                v.config.axis = 'z'; v.config.dir = (Math.abs(ang) < 0.1) ? 1 : -1; 
+                                v.lane = (v.config.dir === 1) ? 'N' : 'S';
+                            } else { 
+                                v.config.axis = 'x'; v.config.dir = (Math.abs(ang - Math.PI/2) < 0.1) ? 1 : -1; 
+                                v.lane = (v.config.dir === -1) ? 'E' : 'W';
+                            }
+                            v.intent = 'straight';
+                        }
+                    } else {
+                        pos[axis] += v.speed * dir;
+                    }
+
+                    // Blinker Logic (Improved side-selective)
+                    if (v.intent !== 'straight' || v.isTurning) {
+                        const flash = Math.floor(Date.now() / 400) % 2;
+                        const side = v.intent === 'left' ? 'L' : 'R';
+                        v.blinkers.L.material.opacity = (side === 'L' && flash) ? 1 : 0;
+                        v.blinkers.R.material.opacity = (side === 'R' && flash) ? 1 : 0;
+                    } else {
+                        v.blinkers.L.material.opacity = v.blinkers.R.material.opacity = 0;
+                    }
+
                     v.brakeLights.forEach(l => l.material.color.setHex((v.status === 'braking' || v.speed < 0.2) ? 0xff0000 : 0x400000));
-                    
                     if(v.sirens) {
                         const flash = Math.floor(Date.now() / 150) % 2;
                         v.sirens.material.color.setHex(flash ? 0xff0000 : 0xffffff);
                     }
-
-                    if (dist > 2500) { this.scene.remove(v.mesh); this.vehicles.splice(i, 1); }
-                });
+                    if (dist > 1500) { this.scene.remove(v.mesh); this.vehicles.splice(i, 1); }
+                }
                 document.getElementById('car-count').innerText = this.vehicles.length;
             }
 
             updatePedestrians(dt) {
-                this.pedestrians.forEach((p, i) => {
+                for (let i = this.pedestrians.length - 1; i >= 0; i--) {
+                    const p = this.pedestrians[i];
                     const light = this.trafficLights[p.side];
                     let canWalk = (light.state === 'red'); // Pedestrians cross when vehicle signal is RED
 
@@ -841,16 +1009,24 @@
                         this.scene.remove(p.mesh);
                         this.pedestrians.splice(i, 1);
                     }
-                });
+                }
             }
 
             triggerEmergency() { this.spawnCar(null, 'ambulance'); }
             reset() { this.vehicles.forEach(v => this.scene.remove(v.mesh)); this.vehicles = []; this.pedestrians.forEach(p => this.scene.remove(p.mesh)); this.pedestrians = []; this.phaseTime = 0; }
             
             loadScenario(s) { 
-                this.reset();
+                // Removed this.reset() to prevent world clearing during transitions
                 this.powerOutage = (s === 'outage');
                 this.isRaining = (s === 'rain');
+                this.isSnowing = (s === 'snow');
+                this.isFoggy = (s === 'fog');
+                this.isScramble = (s === 'scramble');
+                this.isRush = (s === 'rush');
+                
+                CONFIG.MAX_CARS_PER_ROAD = this.isRush ? 15 : 5;
+                CONFIG.NORMAL_SPEED = this.isRush ? 3.5 : 4.5; // Slightly slower flux in rush hour
+                
                 this.rainParticles.material.opacity = this.isRaining ? 1 : 0;
                 
                 this.sun.intensity = (s==='night'||s==='outage'||s==='rain')?0.05:1.0;
@@ -869,7 +1045,13 @@
                         m.opacity = 1.0;
                     }
                 });
-                this.streetLights.forEach(l => l.intensity = (s==='night'||s==='outage'||s==='rain')?4:0);
+                this.streetLights.forEach(l => {
+                    if (s==='night'||s==='outage'||s==='rain') {
+                        l.material.color.setHex(s === 'outage' ? 0x000000 : 0xfef9c3);
+                    } else {
+                        l.material.color.setHex(0x000000);
+                    }
+                });
             }
 
             togglePanel() {
@@ -898,7 +1080,8 @@
                     }
                 }
 
-                if(Math.random() < 0.02) this.spawnCar(); 
+                const spawnChance = this.isRush ? 0.08 : 0.02;
+                if(Math.random() < spawnChance) this.spawnCar(); 
                 
                 if (this.isRaining) {
                     const positions = this.rainParticles.geometry.attributes.position.array;
