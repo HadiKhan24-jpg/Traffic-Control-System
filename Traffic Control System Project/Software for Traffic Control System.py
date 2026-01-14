@@ -1339,8 +1339,11 @@ def console_demo():
 ####################
 
 if __name__ == "__main__":
-    # Set UTF-8 encoding for Windows console
     import sys
+    import webbrowser
+    import os
+
+    # Set UTF-8 encoding for Windows console
     if sys.platform == 'win32':
         try:
             sys.stdout.reconfigure(encoding='utf-8')
@@ -1351,25 +1354,35 @@ if __name__ == "__main__":
     print("  ADVANCED TRAFFIC CONTROL SYSTEM v2.0")
     print("=" * 60)
     print("\nChoose interface mode:")
-    print("1. GUI Mode (Recommended)")
-    print("2. Console Mode")
+    print("1. 3D Simulation Mode (Competition Edition)")
+    print("2. Console Analytics Mode")
     
     try:
         choice = input("\nEnter your choice (1 or 2): ").strip()
         if choice == "1":
-            print("\n[*] Starting GUI mode...")
-            system = create_sample_setup()
-            gui = TrafficControlGUI(system)
-            gui.run()
+            print("\n[*] Launching 3D Traffic Simulation Engine...")
+            
+            # Target HTML file path
+            html_path = r"d:\DOCUMENTS\Sigma Web Development Course\Traffic Control System\TRAFFIC_AI_PRO_SUBMISSION\TrafficSystem3D_COMPETITION.html"
+            
+            if os.path.exists(html_path):
+                print(f"[*] Opening: {html_path}")
+                webbrowser.open(f'file:///{html_path}')
+                print("[SUCCESS] Simulation launched in default browser.")
+                print("Press standard browser controls (F11) for full screen.")
+            else:
+                print(f"\n[ERROR] Simulation file not found at:\n{html_path}")
+                print("Please ensure the file exists or check the path.")
+                
         elif choice == "2":
             print("\n[*] Starting console mode...")
             console_demo()
         else:
-            print("\n[!] Invalid choice. Starting GUI mode by default...")
-            system = create_sample_setup()
-            gui = TrafficControlGUI(system)
-            gui.run()
-    
+            print("\n[!] Invalid choice. Launching Simulation by default...")
+            html_path = r"d:\DOCUMENTS\Sigma Web Development Course\Traffic Control System\TRAFFIC_AI_PRO_SUBMISSION\TrafficSystem3D_COMPETITION.html"
+            if os.path.exists(html_path):
+                webbrowser.open(f'file:///{html_path}')
+                
     except KeyboardInterrupt:
         print("\n\n[*] System shutdown requested. Goodbye!")
     except Exception as e:
